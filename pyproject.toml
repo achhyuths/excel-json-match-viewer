@@ -1,0 +1,12 @@
+[project]
+name = "excel-json-match-viewer"
+version = "0.1.0"
+description = "Streamlit app for matching baseline Excel data points against extracted JSON tables."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.44.0",
+    "pandas>=2.2.0",
+    "openpyxl>=3.1.0",
+    "xlrd>=2.0.1",
+]
