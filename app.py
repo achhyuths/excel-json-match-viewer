@@ -353,8 +353,8 @@ if run_clicked:
         value_cols[2].metric("Left points", f"{summary['total_points']}")
         value_cols[3].metric("Right points", f"{summary['json_data_points']}")
         value_cols[4].metric(
-            "Left = Right",
-            "Yes" if summary["data_point_counts_equal"] else "No",
+            "Right >= Left",
+            "Yes" if summary["data_point_coverage_ok"] else "No",
             delta=f"{summary['data_point_delta']:+}",
         )
 
@@ -365,9 +365,10 @@ if run_clicked:
             by_file_display = by_file.copy()
             by_file_display["accuracy"] = by_file_display["accuracy"].map(lambda value: f"{value:.2f}%")
             by_file_display["value_accuracy"] = by_file_display["value_accuracy"].map(lambda value: f"{value:.2f}%")
-            by_file_display["left_right_equal"] = by_file_display["left_right_equal"].map(
+            by_file_display["json_coverage_ok"] = by_file_display["json_coverage_ok"].map(
                 lambda value: "Yes" if value else "No"
             )
+            by_file_display = by_file_display.drop(columns=["left_right_equal"], errors="ignore")
             st.dataframe(by_file_display, use_container_width=True, height=260)
 
         st.subheader("Comparison Results")

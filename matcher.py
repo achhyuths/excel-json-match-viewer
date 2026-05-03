@@ -98,6 +98,15 @@ DATE_ALIASES = (
     "fundate",
     "report_as_of_date",
 )
+FOUND_ALIASES = ("found", "found y n")
+CATEGORY_FLAG_ALIASES = {
+    "gics": ("gics y n",),
+    "geography": ("geography y n",),
+    "asset_type": ("asset type y n",),
+    "market_cap": ("market cap y n",),
+    "holdings": ("holdings y n",),
+}
+NO_FLAG_VALUES = {"n", "no", "false"}
 
 
 @dataclass(frozen=True)
@@ -673,6 +682,86 @@ def first_row_value(row: pd.Series, aliases: Iterable[str]) -> str:
     return ""
 
 
+def is_no_flag(value: Any) -> bool:
+    return normalize_value(value) in NO_FLAG_VALUES
+
+
+def row_has_no_flag(row: pd.Series, aliases: Iterable[str]) -> bool:
+    targets = {canonical_name(alias) for alias in aliases}
+    for column in row.index:
+        if canonical_name(column) in targets and is_no_flag(row[column]):
+            return True
+    return False
+
+
+def fund_category_flags(sheets: dict[str, pd.DataFrame]) -> list[dict[str, Any]]:
+    fund_sheet = next(
+        (frame for name, frame in sheets.items() if canonical_name(name) == "fund"),
+        None,
+    )
+    if fund_sheet is None:
+        return []
+
+    records: list[dict[str, Any]] = []
+    df = clean_dataframe(fund_sheet)
+    for _, row in df.iterrows():
+        flags: dict[str, bool] = {}
+        for category, aliases in CATEGORY_FLAG_ALIASES.items():
+            for alias in aliases:
+                value = first_row_value(row, [alias])
+                if value:
+                    flags[category] = not is_no_flag(value)
+                    break
+
+        if not flags:
+            continue
+
+        fund_date = normalize_date(first_row_value(row, DATE_ALIASES))
+        period = normalize_period(first_row_value(row, PERIOD_ALIASES)) or normalize_period(fund_date)
+        quarter = normalize_quarter(first_row_value(row, QUARTER_ALIASES))
+        records.append(
+            {
+                "period": period,
+                "date": fund_date,
+                "quarter": quarter,
+                "flags": flags,
+            }
+        )
+
+    return records
+
+
+def category_is_enabled(
+    flag_records: Iterable[dict[str, Any]],
+    category: str,
+    period: str,
+    fund_date: str,
+    quarter: str,
+) -> bool:
+    if not category:
+        return True
+
+    for record in flag_records:
+        flags = record.get("flags", {})
+        if category not in flags:
+            continue
+
+        same_period = bool(period and record.get("period") and period == record["period"])
+        same_date = bool(fund_date and record.get("date") and fund_date == record["date"])
+        same_quarter = bool(
+            not period
+            and not fund_date
+            and quarter
+            and record.get("quarter")
+            and quarter == record["quarter"]
+        )
+
+        if same_period or same_date or same_quarter:
+            return bool(flags[category])
+
+    return True
+
+
 def label_from_table_name(table_name: str) -> str:
     parts = table_name.split(".")
     if len(parts) >= 2 and parts[-1] in {"extracted_value", "source_location", "found", "explanation"}:
@@ -730,6 +819,7 @@ def collect_excel_points(
     points: list[dict[str, Any]] = []
     selected_sheet_set = set(selected_sheets or sheets.keys())
     selected_column_set = set(selected_columns or available_columns(sheets, selected_sheet_set))
+    category_flags = fund_category_flags(sheets)
 
     for sheet_name, frame in sheets.items():
         if sheet_name not in selected_sheet_set:
@@ -739,10 +829,17 @@ def collect_excel_points(
             df = apply_filters(df, filters)
 
         for row_position, (_, row) in enumerate(df.iterrows(), start=2):
+            if row_has_no_flag(row, FOUND_ALIASES):
+                continue
+
             row_label = first_row_value(row, LABEL_ALIASES)
             fund_date = normalize_date(first_row_value(row, DATE_ALIASES))
             period = normalize_period(first_row_value(row, PERIOD_ALIASES)) or normalize_period(fund_date)
             quarter = normalize_quarter(first_row_value(row, QUARTER_ALIASES))
+            baseline_category = sheet_category(sheet_name)
+
+            if not category_is_enabled(category_flags, baseline_category, period, fund_date, quarter):
+                continue
 
             for column in df.columns:
                 if str(column) not in selected_column_set:
@@ -759,7 +856,7 @@ def collect_excel_points(
                         "excel_column": str(column),
                         "baseline_value": display_value(raw_value),
                         "normalized_value": normalized,
-                        "baseline_category": sheet_category(sheet_name),
+                        "baseline_category": baseline_category,
                         "row_label": row_label,
                         "row_label_key": label_key(row_label),
                         "baseline_period": period,
@@ -1189,6 +1286,9 @@ def compare_baseline_to_json(
         "json_data_points": json_data_points,
         "data_point_delta": json_data_points - total_points,
         "data_point_counts_equal": int(json_data_points == total_points),
+        "data_point_coverage_ok": int(json_data_points >= total_points),
+        "extra_json_points": max(json_data_points - total_points, 0),
+        "json_point_shortfall": max(total_points - json_data_points, 0),
     }
     return results, summary
 
@@ -1250,6 +1350,9 @@ def summarize_by_json_file(
                 "json_data_points": summary["json_data_points"],
                 "data_point_delta": summary["data_point_delta"],
                 "left_right_equal": bool(summary["data_point_counts_equal"]),
+                "json_coverage_ok": bool(summary["data_point_coverage_ok"]),
+                "extra_json_points": summary["extra_json_points"],
+                "json_point_shortfall": summary["json_point_shortfall"],
             }
         )
 
